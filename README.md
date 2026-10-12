@@ -1,5 +1,7 @@
 # 🏀 Basketball AI: Detect, Track and Identify Players
 
+![Basketball AI cover](assets/cover.jpg)
+
 An end-to-end computer vision pipeline that turns raw basketball broadcast footage into structured analytics: **who is on the court, where they are, and how much of the court each team controls.**
 
 The pipeline chains detection, segmentation-based tracking, unsupervised team clustering, jersey-number OCR, and court homography. Each stage feeds the next.
@@ -36,6 +38,12 @@ Basketball broadcast video is a difficult setting for off-the-shelf vision model
 ---
 
 ## Pipeline overview
+
+The system processes a source video through detection, tracking, team assignment, number recognition and player recognition. A parallel branch detects court keypoints, projects players onto a 2D court, corrects trajectories and classifies shots.
+
+![Pipeline overview](assets/pipeline-overview.png)
+
+Stage summary:
 
 ```
 Video frame
@@ -91,6 +99,12 @@ Video frame
 
 ### 1. Object detection (RF-DETR)
 
+RF-DETR with a DINOv2 backbone sits on the accuracy/latency frontier against YOLOv8, YOLOv11, D-FINE and LW-DETR, both on COCO and on the RF100-VL domain-adaptation benchmark. This is why the Small variant was chosen.
+
+| COCO object detection | RF100-VL object detection |
+|---|---|
+| ![RF-DETR on COCO](assets/rfdetr-coco-benchmark.png) | ![RF-DETR on RF100-VL](assets/rfdetr-rf100vl-benchmark.png) |
+
 A fine-tuned RF-DETR model detects 10 classes: `ball`, `ball-in-basket`, `number`, `player`, `player-in-possession`, `player-jump-shot`, `player-layup-dunk`, `player-shot-block`, `referee` and `rim`.
 
 - Confidence threshold: `0.4`
@@ -106,9 +120,15 @@ A fine-tuned RF-DETR model detects 10 classes: `ball`, `ball-in-basket`, `number
 | **DeepSORT / ByteTrack** | Adds appearance embeddings from crops for visual similarity. | Players move fast and overlap often, so crop embeddings become unreliable. |
 | **SAM 2 (used here)** | Does not depend on predicted motion or detection matching. It follows how each object looks at pixel level (shape, colour, texture) across frames and stores this as high-dimensional visual embeddings. | Slowest component, but it handles occlusion, deformation and re-entry well. |
 
+**SAM vs SAM 2.** The original SAM segments a single image from mask, point or box prompts. SAM 2 extends this to video with memory, so a prompted object keeps its identity across frames.
+
+[![SAM vs SAM 2 (click to play the video)](assets/sam-vs-sam2-preview.jpg)](assets/sam-vs-sam2.mp4)
+
 **How it is used:** the RF-DETR player boxes from the first frame prompt SAM 2, which then propagates a mask and a stable `tracker_id` for each player through the clip.
 
 **Cleanup step.** SAM 2 sometimes produces masks with disconnected fragments. These errors look harmless alone but **cascade** into later stages such as the clustering crops. A cleanup function drops disconnected parts that lie too far from the main mask, using a centroid and distance check.
+
+![SAM 2 segmentation error](assets/sam2-segmentation-error.jpg)
 
 ### 3. Team separation (unsupervised)
 
@@ -120,9 +140,13 @@ A supervised classifier would need large labelled data, and jerseys are not fixe
 4. Reduce the embeddings to 3D with **UMAP**.
 5. Cluster with **K-Means (k = 2)**.
 
+![SigLIP, UMAP and K-Means team clustering](assets/team-clustering-pipeline.png)
+
 The output is two clusters, one per team. Cluster IDs are arbitrary, so a `TEAM_NAMES` mapping (for example `0 → New York Knicks`) is chosen after inspecting the result. A VLM such as Qwen 3 VL could name the teams automatically, but it would add latency, so a manual mapping is used instead.
 
 Team IDs are assigned **once per tracker** and reused across frames.
+
+![Team assignment on a game frame](assets/team-assignment-frame.jpg)
 
 ### 4. Jersey number recognition (OCR)
 
@@ -130,6 +154,10 @@ Numbers are small, partly occluded, distorted by pose, blurred by motion and loo
 
 - **Zero-shot SmolVLM2:** about **56%** accuracy.
 - **Fine-tuned SmolVLM2:** about **86%** accuracy.
+
+| Zero-shot (accuracy 0.56) | Fine-tuned (accuracy 0.86) |
+|---|---|
+| ![Zero-shot confusion matrix](assets/ocr-confusion-matrix-zeroshot.png) | ![Fine-tuned confusion matrix](assets/ocr-confusion-matrix-finetuned.png) |
 
 Fine-tuning data was built by:
 
@@ -142,8 +170,13 @@ Fine-tuning data was built by:
 RF-DETR detects the number box, SmolVLM2 reads it, and SAM 2 provides the player mask with tracker and team IDs. These outputs come from separate models and have to be merged.
 
 - **Matching rule: IoS (Intersection over Smaller area).** A number box lies inside its player's mask, so IoS ≈ 1. IoS is like IoU but normalised by the smaller area, which suits a small box inside a large mask.
+
+  ![Number detections inside player masks](assets/number-player-matching-ios.jpg)
+
 - **Multi-frame confirmation.** A single frame often hides the number, so a `ConsecutiveValueTracker` (`n_consecutive = 3`) only locks a number to a tracker after repeated consistent reads.
 - **Roster lookup.** Once confirmed, a dictionary maps `(team, number)` to the player's name.
+
+![Multi-frame number patching](assets/multi-frame-number-patching.jpg)
 
 ### 6. Homography and court mapping
 
@@ -151,6 +184,9 @@ The goal is to go from *who is on court* to *where they are* to *how much of the
 
 - A keypoint model detects up to **33 court landmarks** (confidence `0.3`, anchor confidence `0.5`).
 - A homography matrix maps the 2D video frame to a standard 2D court layout, giving a top-down view for analysis.
+
+![Homography: camera view to top-down court layout](assets/homography.png)
+
 - Because the camera moves constantly, the visible keypoints change from frame to frame. The transform is recomputed per frame.
 - **Path cleaning.** Teleport-like jumps are removed with robust speed analysis, gaps are filled by linear interpolation, and paths are smoothed with a **Savitzky–Golay filter**.
 - **Shot events.** `ShotEventTracker` combines jump-shot, layup/dunk and ball-in-basket detections to classify shots as made or missed, and plots them on the court.
@@ -245,3 +281,10 @@ Open `basketball_ai_how_to_detect_track_and_identify_basketball_players.ipynb` a
 - **OCR in difficult cases.** Heavy motion blur, occlusion and side views remain the main failure modes.
 - **Manual team naming.** Cluster-to-team mapping is manual; an open-source VLM could automate it at a latency cost.
 - **Single-camera input.** Results depend on keypoint visibility in broadcast footage.
+
+---
+
+## Acknowledgements
+
+- [Meta SAM 2](https://github.com/facebookresearch/sam2) and the [real-time fork](https://github.com/Gy920/segment-anything-2-real-time)
+- RF-DETR, DINOv2, SigLIP, SmolVLM2 and UMAP authors
