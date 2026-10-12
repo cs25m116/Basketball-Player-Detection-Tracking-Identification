@@ -2,11 +2,9 @@
 
 ![Basketball AI cover](assets/cover.jpg)
 
-An end-to-end computer vision pipeline that turns raw basketball broadcast footage into structured analytics: **who is on the court, where they are, and how much of the court each team controls.**
+An end-to-end computer vision pipeline that turns raw basketball broadcast footage into structured analytics: **who is on the court, where they are.**
 
 The pipeline chains detection, segmentation-based tracking, unsupervised team clustering, jersey-number OCR, and court homography. Each stage feeds the next.
-
-> Based on the Roboflow *Basketball AI* notebook and the [`roboflow/sports`](https://github.com/roboflow/sports) library (`feat/basketball` branch). The demo footage is from Game 1 of the 2025 NBA Playoffs, Boston Celtics vs New York Knicks.
 
 ---
 
